@@ -38,6 +38,10 @@ CHROME_GUESSES_MACOS = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
 )
 
+EDGE_GUESSES_MACOS = (
+    "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+)
+
 # https://stackoverflow.com/a/40674915/409879
 CHROME_GUESSES_WINDOWS = (
     # Windows 10
@@ -51,6 +55,13 @@ CHROME_GUESSES_WINDOWS = (
     r"C:\Users\UserName\AppDataLocal\Google\Chrome",
     # XP
     r"C:\Documents and Settings\UserName\Local Settings\Application Data\Google\Chrome",
+)
+
+EDGE_GUESSES_WINDOWS = (
+    # Windows 10+
+    os.path.expandvars(r"%Program Files (x86)%\Microsoft\Edge\Application\msedge.exe"),
+    os.path.expandvars(r"%Program Files%\Microsoft\Edge\Application\msedge.exe"),
+    os.path.expandvars(r"%LocalAppData%\Microsoft\Edge\Application\msedge.exe"),
 )
 
 # https://unix.stackexchange.com/a/439956/20079
@@ -70,19 +81,91 @@ CHROME_GUESSES_LINUX = [
     )
 ]
 
+EDGE_GUESSES_LINUX = [
+    "/".join((path, executable))
+    for path, executable in itertools.product(
+        (
+            "/usr/local/sbin",
+            "/usr/local/bin",
+            "/usr/sbin",
+            "/usr/bin",
+            "/sbin",
+            "/bin",
+        ),
+        ("microsoft-edge", "edge"),
+    )
+]
 
-def guess_chrome_path() -> str:
+BRAVE_GUESSES_LINUX = [
+    "/".join((path, executable))
+    for path, executable in itertools.product(
+        (
+            "/usr/local/sbin",
+            "/usr/local/bin",
+            "/usr/sbin",
+            "/usr/bin",
+            "/sbin",
+            "/bin",
+        ),
+        ("brave-browser", "brave"),
+    )
+]
+
+# WSL (Windows Subsystem for Linux) paths
+EDGE_GUESSES_WSL = [
+    "/mnt/c/Program Files (x86)/Microsoft/Edge/Application/msedge.exe",
+    "/mnt/c/Program Files/Microsoft/Edge/Application/msedge.exe",
+    "/mnt/c/Users/*/AppData/Local/Microsoft/Edge/Application/msedge.exe",
+]
+
+CHROME_GUESSES_WSL = [
+    "/mnt/c/Program Files (x86)/Google/Chrome/Application/chrome.exe",
+    "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe",
+    "/mnt/c/Users/*/AppData/Local/Google/Chrome/Application/chrome.exe",
+]
+
+
+def is_wsl() -> bool:
+    """Detect if running in Windows Subsystem for Linux."""
+    try:
+        with open("/proc/version") as f:
+            return "microsoft" in f.read().lower()
+    except FileNotFoundError:
+        return False
+
+
+def expand_wsl_paths(paths: list) -> list:
+    """Expand wildcards in WSL paths and filter existing files."""
+    import glob
+    expanded = []
+    for path in paths:
+        if "*" in path:
+            matches = glob.glob(path)
+            expanded.extend(matches)
+        else:
+            expanded.append(path)
+    return expanded
+
+
+def guess_browser_path() -> str:
+    """Find Edge or Chrome/Chromium, prioritizing Edge. Handles Windows, macOS, Linux, and WSL."""
     if sys.platform == "darwin":
-        guesses = CHROME_GUESSES_MACOS
+        guesses = EDGE_GUESSES_MACOS + CHROME_GUESSES_MACOS
     elif sys.platform == "win32":
-        guesses = CHROME_GUESSES_WINDOWS
+        # Prioritize Edge on Windows since it's almost always available
+        guesses = EDGE_GUESSES_WINDOWS + CHROME_GUESSES_WINDOWS
+    elif is_wsl():
+        # In WSL, try local chromium then prioritize Windows Edge installation
+        guesses = BRAVE_GUESSES_LINUX + EDGE_GUESSES_LINUX + CHROME_GUESSES_LINUX + expand_wsl_paths(EDGE_GUESSES_WSL) + expand_wsl_paths(CHROME_GUESSES_WSL)
     else:
-        guesses = CHROME_GUESSES_LINUX
+        guesses = EDGE_GUESSES_LINUX + CHROME_GUESSES_LINUX
+    
     for guess in guesses:
         if os.path.exists(guess):
-            logging.info("Found Chrome or Chromium at " + guess)
+            browser_name = "Edge" if "edge" in guess.lower() else "Chrome"
+            logging.info(f"Found {browser_name} at " + guess)
             return guess
-    raise ValueError("Could not find Chrome. Please set --chrome-path.")
+    raise ValueError("Could not find Chrome, Chromium, or Edge. Please set --chrome-path.")
 
 
 def title(md: str) -> str:
@@ -139,9 +222,9 @@ def init_resume(directory: str = ".") -> None:
 
 def write_pdf(html: str, prefix: str = "resume", chrome: str = "") -> None:
     """
-    Write html to prefix.pdf
+    Write html to prefix.pdf using Chrome, Chromium, or Edge
     """
-    chrome = chrome or guess_chrome_path()
+    chrome = chrome or guess_browser_path()
     html64 = base64.b64encode(html.encode("utf-8"))
     options = [
         "--no-sandbox",
@@ -163,8 +246,13 @@ def write_pdf(html: str, prefix: str = "resume", chrome: str = "") -> None:
     # https://github.com/puppeteer/puppeteer/issues/298, and
     # https://bugs.python.org/issue26660. If we ever drop Python 3.9 support we
     # can use TemporaryDirectory with ignore_cleanup_errors=True as a context
-    # manager.
-    tmpdir = tempfile.mkdtemp(prefix="resume.md_")
+    # manager. In WSL, we need to use /tmp to avoid permission issues with
+    # Windows executables accessing Linux filesystem paths.
+    if is_wsl():
+        tmpdir = tempfile.mkdtemp(prefix="resume.md_", dir="/tmp")
+    else:
+        tmpdir = tempfile.mkdtemp(prefix="resume.md_")
+    
     options.append(f"--crash-dumps-dir={tmpdir}")
     options.append(f"--user-data-dir={tmpdir}")
 
@@ -191,6 +279,25 @@ def write_pdf(html: str, prefix: str = "resume", chrome: str = "") -> None:
         shutil.rmtree(tmpdir, ignore_errors=True)
         if os.path.isdir(tmpdir):
             logging.debug(f"Could not delete {tmpdir}")
+
+
+def write_pdf_weasy(html: str, prefix: str = "resume") -> None:
+    """
+    Write html to prefix.pdf using WeasyPrint.
+
+    Raises RuntimeError with guidance if WeasyPrint (or its system
+    dependencies) is not available.
+    """
+    try:
+        from weasyprint import HTML
+    except Exception as exc:  # pragma: no cover - runtime import error path
+        raise RuntimeError(
+            "WeasyPrint is not installed or missing system dependencies. "
+            "Install with 'pip install weasyprint' and ensure Cairo/Pango are installed on your system."
+        ) from exc
+
+    HTML(string=html).write_pdf(prefix + ".pdf")
+    logging.info(f"Wrote {prefix}.pdf")
 
 
 def main():
@@ -233,6 +340,11 @@ def main():
         "--chrome-path",
         help="Path to Chrome or Chromium executable",
     )
+    build_parser.add_argument(
+        "--weasy",
+        help="Use WeasyPrint instead of Chrome/Chromium/Edge to render PDF",
+        action="store_true",
+    )
 
     args = parser.parse_args()
 
@@ -258,7 +370,10 @@ def main():
                 logging.info(f"Wrote {htmlfp.name}")
 
         if not args.no_pdf:
-            write_pdf(html, prefix=prefix, chrome=args.chrome_path)
+            if getattr(args, "weasy", False):
+                write_pdf_weasy(html, prefix=prefix)
+            else:
+                write_pdf(html, prefix=prefix, chrome=args.chrome_path)
     else:
         parser.print_help()
 

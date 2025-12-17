@@ -10,7 +10,9 @@ style it with [CSS](src/resume_markdown/resume.css), output to [`resume.html`](e
 ## Prerequisites
 
  - Python ≥ 3.9 or `uv`
- - Optional, required for PDF output: Google Chrome or Chromium
+- Optional, required for PDF output: Google Chrome or Chromium
+- Alternative: WeasyPrint (Python). See notes below.
+ - Alternative: WeasyPrint (Python). See notes below.
 
 ## Installation
 
@@ -71,9 +73,32 @@ pip install resume-markdown
    ```
 
  - Specify a custom input file:
-   ```bash
-   resume-markdown build myresume.md
-   ```
+    ```bash
+    resume-markdown build myresume.md
+    ```
+
+### Using WeasyPrint instead of Chrome/Chromium
+
+WeasyPrint is a Python library that converts HTML/CSS to PDF and can be used
+as an alternative to Chrome/Chromium. It preserves most CSS used in the
+default resume style, including fonts, colors, and page margins. It requires
+additional system libraries (Cairo, Pango, GDK-Pixbuf).
+
+Install system packages (Debian/Ubuntu example):
+
+```bash
+sudo apt install libcairo2 libpango-1.0-0 libgdk-pixbuf2.0-0 libffi7
+uv add weasyprint
+```
+
+Then build with the `--weasy` flag:
+
+```bash
+resume-markdown build --weasy
+```
+
+If WeasyPrint or its system dependencies are missing, the tool will raise a
+clear error explaining how to install them.
 
 ## Customization
 
